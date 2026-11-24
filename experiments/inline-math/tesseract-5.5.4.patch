@@ -1,0 +1,632 @@
+diff --git a/src/ccmain/control.cpp b/src/ccmain/control.cpp
+index bd50ead..d1f7fdd 100644
+--- a/src/ccmain/control.cpp
++++ b/src/ccmain/control.cpp
+@@ -461,6 +461,13 @@ bool Tesseract::recog_all_words(PAGE_RES *page_res, ETEXT_DESC *monitor,
+     if (word->best_choice == nullptr || word->best_choice->empty() ||
+         (word->best_choice->IsAllSpaces() && (pb == nullptr || pb->IsText()))) {
+       page_res_it.DeleteCurrentWord();
++    } else if (lstm_detect_subscripts && tessedit_ocr_engine_mode == OEM_LSTM_ONLY &&
++               !right_to_left() && word->box_word != nullptr) {
++      const BLOCK *block = page_res_it.block()->block;
++      if (block != nullptr && block->re_rotation().x() == 1.0f &&
++          block->classify_rotation().x() == 1.0f) {
++        word->best_choice->MarkLSTMSubscripts(*word->box_word, *page_res_it.row()->row);
++      }
+     }
+   }
+ 
+diff --git a/src/ccmain/linerec.cpp b/src/ccmain/linerec.cpp
+index 8153413..d4db0c6 100644
+--- a/src/ccmain/linerec.cpp
++++ b/src/ccmain/linerec.cpp
+@@ -20,6 +20,7 @@
+ #include "boxread.h"
+ #include "imagedata.h" // for ImageData
+ #include "lstmrecognizer.h"
++#include "ocrrow.h"
+ #include "pageres.h"
+ #include "recodebeam.h"
+ #include "tprintf.h"
+@@ -224,6 +225,155 @@ ImageData *Tesseract::GetRectImage(const TBOX &box, const BLOCK &block, int padd
+   return new ImageData(vertical_text, box_pix);
+ }
+ 
++// Reread two distinct ink components on a common baseline. The synthetic
++// coordinates are private to this inference; original boxes are restored
++// before normal word alignment. The binary image is borrowed from textord.
++static Image ScaledGlyph(Image binary, const TBOX &box, int height) {
++  if (!TBOX(0, 0, pixGetWidth(binary), pixGetHeight(binary)).contains(box)) {
++    return nullptr;
++  }
++  Box *rect = boxCreate(box.left(), pixGetHeight(binary) - box.top(), box.width(), box.height());
++  Image glyph = pixClipRectangle(binary, rect, nullptr);
++  boxDestroy(&rect);
++  if (!glyph) {
++    return nullptr;
++  }
++  Image gray = pixConvertTo8(glyph, false);
++  glyph.destroy();
++  Image scaled = gray ? pixScaleToSize(gray, 0, height) : nullptr;
++  gray.destroy();
++  return scaled;
++}
++
++static Image BaselineAlignedPair(Image binary, const SubscriptPair &pair) {
++  constexpr int kBody = 40, kIndex = 34, kPad = 5, kGap = 2;
++  Image base = ScaledGlyph(binary, pair.base, kBody);
++  Image index = ScaledGlyph(binary, pair.index, kIndex);
++  Image canvas;
++  if (base && index) {
++    int next = kPad + pixGetWidth(base) + kGap;
++    canvas = pixCreate(next + pixGetWidth(index) + kPad, kBody + 2 * kPad, 8);
++    if (canvas) {
++      pixSetAll(canvas);
++      pixRasterop(canvas, kPad, kPad, pixGetWidth(base), kBody, PIX_SRC, base, 0, 0);
++      pixRasterop(canvas, next, kPad + kBody - kIndex, pixGetWidth(index), kIndex,
++                  PIX_SRC, index, 0, 0);
++    }
++  }
++  base.destroy();
++  index.destroy();
++  return canvas;
++}
++
++// A row that nearly failed layout can have a bad fitted baseline. Two
++// distinct decoder slots corroborated by the original ink need no reread.
++static void MarkAlignedPair(WERD_RES *word, const SubscriptPair &pair, const Dict *dict) {
++  WERD_CHOICE *choice = word->best_choice;
++  if (!choice || choice->length() < 2 || choice->length() > 4) {
++    return;
++  }
++  // In a word such as "By" the descender reaches below the baseline, but
++  // the top of the y is still near x-height. Require deeper placement before
++  // overriding a dictionary word (or when there is no language dictionary).
++  if (pair.base.top() - pair.index.top() < 0.55f * pair.base.height() &&
++      (!dict || dict->valid_word(*choice))) {
++    return;
++  }
++  const UNICHARSET &cs = *word->uch_set;
++  C_BLOB_IT it(word->word->cblob_list());
++  if (it.length() != choice->length()) {
++    return;
++  }
++  auto alnum = [&cs](UNICHAR_ID id) { return cs.get_isalpha(id) || cs.get_isdigit(id); };
++  TBOX prev = it.data()->bounding_box();
++  for (unsigned i = 1; i < choice->length(); ++i) {
++    it.forward();
++    TBOX current = it.data()->bounding_box();
++    auto base = choice->unichar_id(i - 1), index = choice->unichar_id(i);
++    if (cs.get_isalpha(base) && alnum(index) && (cs.get_isupper(base) || cs.get_isdigit(index)) &&
++        (i == 1 || !alnum(choice->unichar_id(i - 2))) &&
++        (i + 1 == choice->length() || !alnum(choice->unichar_id(i + 1))) &&
++        prev.left() <= pair.base.x_middle() && pair.base.x_middle() < prev.right() &&
++        current.left() <= pair.index.x_middle() && pair.index.x_middle() < current.right()) {
++      choice->SetBlobPosition(i, SP_SUBSCRIPT);
++      return;
++    }
++    prev = current;
++  }
++}
++
++// Retry only a disagreement in segmentation: two ink glyphs decoded as
++// one character, or as a base plus multiple punctuation fragments. A single
++// trailing comma already accounts for the second glyph and may be genuine.
++static void RecoverSubscriptWords(LSTMRecognizer *recognizer, Image binary, WERD *input,
++                                  int choice_mode, int iterations, PointerVector<WERD_RES> *words) {
++  std::vector<TBOX> boxes;
++  CollectScriptBlobs(input, &boxes);
++  const auto pairs = FindSubscriptPairs(std::move(boxes));
++  const UNICHARSET &charset = recognizer->GetUnicharset();
++  size_t w = 0;
++  int tries = 0;
++  for (const auto &pair : pairs) {
++    const TBOX &base = pair.base, &index = pair.index;
++    while (w < words->size() && (*words)[w]->word->bounding_box().right() <= base.x_middle()) {
++      ++w;
++    }
++    if (w == words->size()) {
++      break;
++    }
++    WERD_RES *old = (*words)[w];
++    MarkAlignedPair(old, pair, recognizer->GetDict());
++    int clearance = std::max(2, base.height() / 7);
++    if (tries >= 8 || base.right() > index.left() || pair.previous_right > base.left() - clearance ||
++        pair.next_left < index.right() + clearance) {
++      continue;
++    }
++    TBOX bounds = old->word->bounding_box();
++    if (bounds.left() > base.x_middle() || bounds.right() < index.x_middle() ||
++        bounds.left() < pair.previous_right || bounds.right() > pair.next_left) {
++      continue;
++    }
++    WERD_CHOICE *first = old->best_choice;
++    if (!first || (first->length() != 1 && first->length() != 3) ||
++        !charset.get_isalpha(first->unichar_id(0))) {
++      continue;
++    }
++    if (first->length() == 3 && (!charset.get_ispunctuation(first->unichar_id(1)) ||
++                                 !charset.get_ispunctuation(first->unichar_id(2)))) {
++      continue;
++    }
++
++    Image aligned = BaselineAlignedPair(binary, pair);
++    if (!aligned) {
++      continue;
++    }
++    ++tries;
++    TBOX synthetic(0, 0, pixGetWidth(aligned), pixGetHeight(aligned));
++    ImageData sample(false, aligned); // takes ownership
++    PointerVector<WERD_RES> retry;
++    recognizer->RecognizeLine(sample, 0, false, kWorstDictCertainty / kCertaintyScale,
++                              synthetic, &retry, choice_mode, iterations);
++    if (retry.size() != 1 || !retry[0]->best_choice) {
++      continue;
++    }
++    WERD_CHOICE *second = retry[0]->best_choice;
++    if (second->length() != 2 || second->unichar_id(0) != first->unichar_id(0) ||
++        (!charset.get_isalpha(second->unichar_id(1)) && !charset.get_isdigit(second->unichar_id(1))) ||
++        second->certainty(1) < -1.0f) {
++      continue;
++    }
++    second->SetBlobPosition(1, SP_SUBSCRIPT);
++    retry[0]->word->cblob_list()->clear();
++    C_BLOB_IT blobs(retry[0]->word->cblob_list());
++    blobs.add_after_then_move(C_BLOB::FakeBlob(base));
++    blobs.add_after_then_move(C_BLOB::FakeBlob(index));
++    retry[0]->word->set_blanks(old->word->space());
++    retry[0]->space_certainty = old->space_certainty;
++    std::swap((*words)[w], retry[0]);
++    ++w;
++  }
++}
++
+ // Recognizes a word or group of words, converting to WERD_RES in *words.
+ // Analogous to classify_word_pass1, but can handle a group of words as well.
+ void Tesseract::LSTMRecognizeWord(const BLOCK &block, ROW *row, WERD_RES *word,
+@@ -254,6 +404,11 @@ void Tesseract::LSTMRecognizeWord(const BLOCK &block, ROW *row, WERD_RES *word,
+                                   kWorstDictCertainty / kCertaintyScale, word_box, words,
+                                   lstm_choice_mode, lstm_choice_iterations);
+   delete im_data;
++  if (RecoverSubscriptsEnabled() && !words->empty() && block.re_rotation().x() == 1.0f &&
++      block.classify_rotation().x() == 1.0f) {
++    RecoverSubscriptWords(lstm_recognizer_, pix_binary_, word->word, lstm_choice_mode,
++                          lstm_choice_iterations, words);
++  }
+   SearchWords(words);
+ }
+ 
+diff --git a/src/ccmain/pagesegmain.cpp b/src/ccmain/pagesegmain.cpp
+index bcd62a4..da2a58d 100644
+--- a/src/ccmain/pagesegmain.cpp
++++ b/src/ccmain/pagesegmain.cpp
+@@ -170,7 +170,8 @@ int Tesseract::SegmentPage(const char *input_file, BLOCK_LIST *blocks, Tesseract
+   bool cjk_mode = textord_use_cjk_fp_model;
+ 
+   textord_.TextordPage(pageseg_mode, reskew_, width, height, pix_binary_, pix_thresholds_,
+-                       pix_grey_, splitting || cjk_mode, &diacritic_blobs, blocks, &to_blocks, &gradient_);
++                       pix_grey_, splitting || cjk_mode, &diacritic_blobs, blocks, &to_blocks, &gradient_,
++                       RecoverSubscriptsEnabled());
+   return auto_page_seg_ret_val;
+ }
+ 
+diff --git a/src/ccmain/tesseractclass.cpp b/src/ccmain/tesseractclass.cpp
+index ce896a8..0365ef0 100644
+--- a/src/ccmain/tesseractclass.cpp
++++ b/src/ccmain/tesseractclass.cpp
+@@ -426,6 +426,12 @@ Tesseract::Tesseract()
+                   this->params())
+     , STRING_MEMBER(page_separator, "\f", "Page separator (default is form feed control character)",
+                     this->params())
++    , BOOL_MEMBER(lstm_recover_subscripts, false,
++                  "Recover lowered glyphs from ink components in horizontal LSTM text",
++                  this->params())
++    , BOOL_MEMBER(lstm_detect_subscripts, false,
++                  "Mark lowered indices in horizontal LSTM text using the symbol iterator",
++                  this->params())
+     , INT_MEMBER(lstm_choice_mode, 0,
+                  "Allows to include alternative symbols choices in the hOCR output. "
+                  "Valid input values are 0, 1 and 2. 0 is the default value. "
+diff --git a/src/ccmain/tesseractclass.h b/src/ccmain/tesseractclass.h
+index 9a8875c..48af97e 100644
+--- a/src/ccmain/tesseractclass.h
++++ b/src/ccmain/tesseractclass.h
+@@ -269,6 +269,12 @@ public:
+     return &textord_;
+   }
+ 
++  bool RecoverSubscriptsEnabled() const {
++    return lstm_recover_subscripts && tessedit_ocr_engine_mode == OEM_LSTM_ONLY &&
++           !right_to_left() && (tessedit_pageseg_mode == PSM_SINGLE_LINE ||
++                                tessedit_pageseg_mode == PSM_SINGLE_BLOCK ||
++                                tessedit_pageseg_mode == PSM_AUTO);
++  }
+   bool right_to_left() const {
+     return right_to_left_;
+   }
+@@ -954,6 +960,8 @@ public:
+   INT_VAR_H(tessedit_parallelize);
+   BOOL_VAR_H(preserve_interword_spaces);
+   STRING_VAR_H(page_separator);
++  BOOL_VAR_H(lstm_detect_subscripts);
++  BOOL_VAR_H(lstm_recover_subscripts);
+   INT_VAR_H(lstm_choice_mode);
+   INT_VAR_H(lstm_choice_iterations);
+   double_VAR_H(lstm_rating_coefficient);
+diff --git a/src/ccstruct/ocrrow.cpp b/src/ccstruct/ocrrow.cpp
+index e65f3eb..7a0e44f 100644
+--- a/src/ccstruct/ocrrow.cpp
++++ b/src/ccstruct/ocrrow.cpp
+@@ -24,8 +24,74 @@
+ #include "blobbox.h"
+ #include "ocrrow.h"
+ 
++#include <algorithm>
++#include <limits>
++
+ namespace tesseract {
+ 
++void CollectScriptBlobs(WERD *word, std::vector<TBOX> *boxes) {
++  for (auto *list : {word->cblob_list(), word->rej_cblob_list()}) {
++    C_BLOB_IT it(list);
++    for (it.mark_cycle_pt(); !it.cycled_list(); it.forward()) {
++      const TBOX box = it.data()->bounding_box();
++      if (box.width() >= 2 && box.height() >= 2) {
++        boxes->push_back(box);
++      }
++    }
++  }
++}
++
++std::vector<SubscriptPair> FindSubscriptPairs(std::vector<TBOX> boxes) {
++  std::sort(boxes.begin(), boxes.end(), [](const TBOX &a, const TBOX &b) {
++    return a.left() < b.left() || (a.left() == b.left() && a.height() > b.height());
++  });
++  // Join vertically separated pieces in the same columns, such as the dot of j.
++  std::vector<TBOX> glyphs;
++  for (const auto &box : boxes) {
++    if (!glyphs.empty() && box.left() < glyphs.back().right() &&
++        !box.y_overlap(glyphs.back()) &&
++        std::min(box.height(), glyphs.back().height()) * 3 <=
++            std::max(box.height(), glyphs.back().height())) {
++      glyphs.back() += box;
++    } else {
++      glyphs.push_back(box);
++    }
++  }
++  std::vector<SubscriptPair> pairs;
++  for (size_t i = 1; i < glyphs.size(); ++i) {
++    const TBOX &base = glyphs[i - 1], &index = glyphs[i];
++    float h = base.height();
++    int gap = index.left() - base.right();
++    int drop = base.bottom() - index.bottom();
++    if (h >= 9 && base.width() >= 0.22f * h && base.width() <= 1.6f * h &&
++        index.width() >= 0.19f * h && index.width() <= 0.96f * h &&
++        index.height() >= 0.37f * h && index.height() <= 0.95f * h &&
++        gap >= -0.22f * h && gap <= 0.5f * h &&
++        drop >= 0.10f * h && drop <= 0.68f * h && base.top() - index.top() >= 0.30f * h) {
++      pairs.push_back({base, index, i > 1 ? glyphs[i - 2].right() : std::numeric_limits<int>::min(),
++                       i + 1 < glyphs.size() ? glyphs[i + 1].left() : std::numeric_limits<int>::max()});
++    }
++  }
++  return pairs;
++}
++
++bool ROW::HasRepeatedSubscripts() {
++  std::vector<TBOX> boxes;
++  WERD_IT it(word_list());
++  for (it.mark_cycle_pt(); !it.cycled_list(); it.forward()) {
++    CollectScriptBlobs(it.data(), &boxes);
++  }
++  auto pairs = FindSubscriptPairs(std::move(boxes));
++  for (size_t i = 1; i < pairs.size(); ++i) {
++    const TBOX &a = pairs[i - 1].base, &b = pairs[i].base;
++    if (b.left() > pairs[i - 1].index.right() && b.height() >= 0.7f * a.height() &&
++        b.height() <= 1.4f * a.height() && std::abs(b.bottom() - a.bottom()) <= 0.35f * a.height()) {
++      return true;
++    }
++  }
++  return false;
++}
++
+ /**********************************************************************
+  * ROW::ROW
+  *
+diff --git a/src/ccstruct/ocrrow.h b/src/ccstruct/ocrrow.h
+index 48fedea..982c68c 100644
+--- a/src/ccstruct/ocrrow.h
++++ b/src/ccstruct/ocrrow.h
+@@ -28,6 +28,7 @@
+ 
+ #include <cstdint> // for int16_t, int32_t
+ #include <cstdio>  // for FILE
++#include <vector>
+ 
+ namespace tesseract {
+ 
+@@ -36,6 +37,17 @@ class TO_ROW;
+ 
+ struct PARA;
+ 
++// Bounds in original bottom-up image coordinates. The neighbors constrain a
++// local reread so it cannot remove punctuation or part of an adjacent word.
++struct SubscriptPair {
++  TBOX base;
++  TBOX index;
++  int previous_right;
++  int next_left;
++};
++void CollectScriptBlobs(WERD *word, std::vector<TBOX> *boxes);
++std::vector<SubscriptPair> FindSubscriptPairs(std::vector<TBOX> boxes);
++
+ class ROW : public ELIST<ROW>::LINK {
+   friend void tweak_row_baseline(ROW *, double, double);
+ 
+@@ -58,6 +70,8 @@ public:
+     return &words;
+   }
+ 
++  bool HasRepeatedSubscripts();
++
+   float base_line(        // compute baseline
+       float xpos) const { // at the position
+     // get spline value
+diff --git a/src/ccstruct/ratngs.cpp b/src/ccstruct/ratngs.cpp
+index e28cfed..ffd29eb 100644
+--- a/src/ccstruct/ratngs.cpp
++++ b/src/ccstruct/ratngs.cpp
+@@ -23,8 +23,10 @@
+ #include "ratngs.h"
+ 
+ #include "blobs.h"
++#include "boxword.h"
+ #include "matrix.h"
+ #include "normalis.h" // kBlnBaselineOffset.
++#include "ocrrow.h"
+ #include "unicharset.h"
+ 
+ #include <algorithm>
+@@ -589,6 +591,72 @@ void WERD_CHOICE::SetScriptPositions(bool small_caps, TWERD *word, int debug) {
+   }
+ }
+ 
++// The LSTM decoder refines its symbol boxes in original image coordinates.
++// Compare the bottoms relative to the row spline so a sloped line is not
++// mistaken for a subscript. Limit inference to short alphanumeric runs.
++void WERD_CHOICE::MarkLSTMSubscripts(const BoxWord &boxes, const ROW &row) {
++  if (boxes.length() != length() || row.x_height() <= 0) {
++    return;
++  }
++  auto alnum = [this](unsigned i) {
++    return unicharset_->get_isalpha(unichar_id(i)) || unicharset_->get_isdigit(unichar_id(i));
++  };
++  for (unsigned start = 0; start < length();) {
++    if (!alnum(start)) {
++      ++start;
++      continue;
++    }
++    unsigned end = start + 1;
++    while (end < length() && alnum(end)) {
++      ++end;
++    }
++    // English LSTM often reads a lowered digit after a capital as a comma.
++    // Admit a single terminal comma only if its ink has the size of a letter.
++    bool comma = end == start + 1 && end + 1 == length() &&
++                 unicharset_->get_isupper(unichar_id(start)) &&
++                 unichar_id(end) == unicharset_->unichar_to_id(",");
++    if (comma) {
++      ++end;
++    }
++    if (end - start == 2 || end - start == 3) {
++      const TBOX &base = boxes.BlobBox(start);
++      float height = base.height();
++      float base_depth = row.base_line(base.x_middle()) - base.bottom();
++      bool lowered = height >= 5;
++      for (unsigned i = start + 1; lowered && i < end; ++i) {
++        const TBOX &index = boxes.BlobBox(i);
++        const TBOX &previous = boxes.BlobBox(i - 1);
++        float depth = row.base_line(index.x_middle()) - index.bottom();
++        // The bottom of a descending base can lie below the row baseline.
++        float shift = depth - std::min(base_depth, height * 0.08f);
++        // A digit can be as tall as a lowercase base even at index size.
++        float max_height = unicharset_->get_isdigit(unichar_id(i)) ? 1.05f : 0.82f;
++        int gap = index.left() - previous.right();
++        if (!unicharset_->get_isalpha(unichar_id(start)) &&
++            !unicharset_->get_isdigit(unichar_id(i))) {
++          lowered = false;
++          break;
++        }
++        if (comma && (index.width() < 0.25f * height || index.height() < 0.45f * height)) {
++          lowered = false;
++          break;
++        }
++        lowered = BlobPosition(i) == SP_NORMAL && index.height() >= 0.32f * height &&
++                  index.height() <= max_height * height && index.x_middle() > previous.x_middle() &&
++                  gap >= -0.25f * height && gap <= 0.5f * height &&
++                  shift >= 0.16f * height && shift <= 0.75f * height &&
++                  depth >= -0.05f * height && base.top() - index.top() >= 0.15f * height;
++      }
++      if (lowered) {
++        for (unsigned i = start + 1; i < end; ++i) {
++          script_pos_[i] = SP_SUBSCRIPT;
++        }
++      }
++    }
++    start = end;
++  }
++}
++
+ // Sets all the script_pos_ positions to the given position.
+ void WERD_CHOICE::SetAllScriptPositions(tesseract::ScriptPos position) {
+   for (unsigned i = 0; i < length_; ++i) {
+diff --git a/src/ccstruct/ratngs.h b/src/ccstruct/ratngs.h
+index 9002105..094c68c 100644
+--- a/src/ccstruct/ratngs.h
++++ b/src/ccstruct/ratngs.h
+@@ -39,7 +39,9 @@
+ 
+ namespace tesseract {
+ 
++class BoxWord;
+ class MATRIX;
++class ROW;
+ struct TBLOB;
+ struct TWERD;
+ 
+@@ -313,6 +315,10 @@ public:
+   inline unsigned state(unsigned index) const {
+     return state_[index];
+   }
++  void SetBlobPosition(unsigned index, ScriptPos pos) {
++    ASSERT_HOST(index < length_);
++    script_pos_[index] = pos;
++  }
+   ScriptPos BlobPosition(unsigned index) const {
+     if (index >= length_) {
+       return SP_NORMAL;
+@@ -553,6 +559,7 @@ public:
+   void SetScriptPositions(bool small_caps, TWERD *word, int debug = 0);
+   // Sets all the script_pos_ positions to the given position.
+   void SetAllScriptPositions(ScriptPos position);
++  void MarkLSTMSubscripts(const BoxWord &boxes, const ROW &row);
+ 
+   static ScriptPos ScriptPositionOf(bool print_debug, const UNICHARSET &unicharset,
+                                     const TBOX &blob_box, UNICHAR_ID unichar_id);
+diff --git a/src/textord/textord.cpp b/src/textord/textord.cpp
+index c78d326..af1f61c 100644
+--- a/src/textord/textord.cpp
++++ b/src/textord/textord.cpp
+@@ -177,7 +177,7 @@ Textord::Textord(CCStruct *ccstruct)
+ void Textord::TextordPage(PageSegMode pageseg_mode, const FCOORD &reskew, int width, int height,
+                           Image binary_pix, Image thresholds_pix, Image grey_pix, bool use_box_bottoms,
+                           BLOBNBOX_LIST *diacritic_blobs, BLOCK_LIST *blocks,
+-                          TO_BLOCK_LIST *to_blocks, float *gradient) {
++                          TO_BLOCK_LIST *to_blocks, float *gradient, bool recover_scripts) {
+   page_tr_.set_x(width);
+   page_tr_.set_y(height);
+   if (to_blocks->empty()) {
+@@ -245,7 +245,7 @@ void Textord::TextordPage(PageSegMode pageseg_mode, const FCOORD &reskew, int wi
+                      to_block->block->row_list());
+   }
+   // Remove empties.
+-  cleanup_blocks(PSM_WORD_FIND_ENABLED(pageseg_mode), blocks);
++  cleanup_blocks(PSM_WORD_FIND_ENABLED(pageseg_mode), blocks, recover_scripts);
+   TransferDiacriticsToBlockGroups(diacritic_blobs, blocks);
+   // Compute the margins for each row in the block, to be used later for
+   // paragraph detection.
+diff --git a/src/textord/textord.h b/src/textord/textord.h
+index 894104c..549d6a6 100644
+--- a/src/textord/textord.h
++++ b/src/textord/textord.h
+@@ -90,7 +90,7 @@ public:
+   void TextordPage(PageSegMode pageseg_mode, const FCOORD &reskew, int width, int height,
+                    Image binary_pix, Image thresholds_pix, Image grey_pix, bool use_box_bottoms,
+                    BLOBNBOX_LIST *diacritic_blobs, BLOCK_LIST *blocks, TO_BLOCK_LIST *to_blocks,
+-                   float *gradient);
++                   float *gradient, bool recover_scripts);
+ 
+   // If we were supposed to return only a single textline, and there is more
+   // than one, clean up and leave only the best.
+@@ -203,7 +203,7 @@ private:
+   // Must have at least one WERD.
+   // WERDs contain a fake blob.
+   void cleanup_nontext_block(BLOCK *block);
+-  void cleanup_blocks(bool clean_noise, BLOCK_LIST *blocks);
++  void cleanup_blocks(bool clean_noise, BLOCK_LIST *blocks, bool recover_scripts);
+   bool clean_noise_from_row(ROW *row);
+   void clean_noise_from_words(ROW *row);
+   // Remove outlines that are a tiny fraction in either width or height
+diff --git a/src/textord/tordmain.cpp b/src/textord/tordmain.cpp
+index e59528d..6eb2c61 100644
+--- a/src/textord/tordmain.cpp
++++ b/src/textord/tordmain.cpp
+@@ -403,7 +403,7 @@ void Textord::cleanup_nontext_block(BLOCK *block) {
+  * Delete empty blocks, rows from the page.
+  **********************************************************************/
+ 
+-void Textord::cleanup_blocks(bool clean_noise, BLOCK_LIST *blocks) {
++void Textord::cleanup_blocks(bool clean_noise, BLOCK_LIST *blocks, bool recover_scripts) {
+   BLOCK_IT block_it = blocks; // iterator
+   ROW_IT row_it;              // row iterator
+ 
+@@ -425,8 +425,10 @@ void Textord::cleanup_blocks(bool clean_noise, BLOCK_LIST *blocks) {
+         ROW *row = row_it.data();
+         ++num_rows_all;
+         clean_small_noise_from_words(row);
+-        if ((textord_noise_rejrows && !row->word_list()->empty() && clean_noise_from_row(row)) ||
+-            row->word_list()->empty()) {
++        if (row->word_list()->empty() ||
++            (textord_noise_rejrows && clean_noise_from_row(row) &&
++             !(recover_scripts && block->re_rotation().x() == 1.0f &&
++               block->classify_rotation().x() == 1.0f && row->HasRepeatedSubscripts()))) {
+           delete row_it.extract(); // lose empty row.
+         } else {
+           if (textord_noise_rejwords) {
+diff --git a/unittest/ratngs_test.cc b/unittest/ratngs_test.cc
+index 9b6d9fd..39ecd72 100644
+--- a/unittest/ratngs_test.cc
++++ b/unittest/ratngs_test.cc
+@@ -11,6 +11,8 @@
+ 
+ #include "include_gunit.h"
+ 
++#include "boxword.h"
++#include "ocrrow.h"
+ #include "ratngs.h"
+ #include "unicharset.h"
+ 
+@@ -80,4 +82,54 @@ TEST_F(RatngsTest, BadWordCertaintyIsSummable) {
+   EXPECT_FALSE(std::isinf(100.0f + 5.0f * cert));
+ }
+ 
++// Original synthetic boxes, in Tesseract's bottom-up row coordinates.
++TEST_F(RatngsTest, LSTMSubscriptGeometry) {
++  for (const char *c : {"P", "n", "2", ","}) {
++    unicharset_.unichar_insert(c);
++  }
++  unicharset_.set_isalpha(unicharset_.unichar_to_id("P"), true);
++  unicharset_.set_isupper(unicharset_.unichar_to_id("P"), true);
++  unicharset_.set_isalpha(unicharset_.unichar_to_id("n"), true);
++  unicharset_.set_isdigit(unicharset_.unichar_to_id("2"), true);
++  int32_t boundaries[] = {0, 200};
++  double coeffs[] = {0.0, 0.0, 50.0};
++  ROW row(1, boundaries, coeffs, 20, 8, -6, 2, 8);
++
++  const TBOX base(5, 50, 25, 80);
++  const TBOX index(26, 43, 39, 61);
++  auto positions = [&](const char *text, std::initializer_list<TBOX> glyphs) {
++    WERD_CHOICE word(text, unicharset_);
++    BoxWord boxes;
++    for (const TBOX &box : glyphs) {
++      boxes.InsertBox(boxes.length(), box);
++    }
++    word.MarkLSTMSubscripts(boxes, row);
++    std::string result;
++    for (unsigned i = 0; i < word.length(); ++i) {
++      result.push_back(word.BlobPosition(i) == SP_SUBSCRIPT ? '_' : '.');
++    }
++    return result;
++  };
++  EXPECT_EQ("._", positions("P2", {base, index}));
++  EXPECT_EQ(".__", positions("Pnn", {base, index, TBOX(40, 43, 53, 61)}));
++  EXPECT_EQ("..", positions("P2", {base, TBOX(26, 50, 39, 74)}));
++  EXPECT_EQ("..", positions("P,", {base, TBOX(26, 45, 30, 54)}));
++  EXPECT_EQ("....", positions("Pnnn", {base, index, index, index}));
++  EXPECT_EQ("..", positions("P2", {base}));
++}
++
++// Connected components use bottom-up image coordinates. A dot and stem
++// belong to the same index. On-baseline neighbors are ordinary letters.
++TEST_F(RatngsTest, FindsLoweredInkBesideBase) {
++  const TBOX base(10, 30, 30, 60), stem(31, 21, 39, 36), dot(34, 38, 37, 41);
++  auto pairs = FindSubscriptPairs({dot, TBOX(66, 30, 78, 52), stem, base});
++  ASSERT_EQ(1u, pairs.size());
++  EXPECT_EQ(10, pairs[0].base.left());
++  EXPECT_EQ(21, pairs[0].index.bottom());
++  EXPECT_EQ(41, pairs[0].index.top());
++  EXPECT_EQ(66, pairs[0].next_left);
++  EXPECT_TRUE(FindSubscriptPairs({base, TBOX(31, 30, 42, 47)}).empty());
++  EXPECT_TRUE(FindSubscriptPairs({base, TBOX(31, 27, 34, 32)}).empty());
++}
++
+ } // namespace tesseract.

@@ -24,3 +24,7 @@ Both runs print plain Tesseract output followed by the prototype's LaTeX. The fi
 ## Initial results
 
 With Tesseract 5.3.4, plain OCR correctly read two of eight equations on the development sheet. The prototype read seven and left a summation unresolved. It then read three of four equations on a separate sheet in the same typeface and left one radical unresolved. These are small synthetic sets. The development sheet informed the geometry rules.
+
+## Inline math in running text
+
+A separate experiment adds opt-in LSTM subscript placement to Tesseract 5.5.4 and measures document-specific reranking of italic z and digit 2 on book scans. The native patch, generated regression fixture, test commands and real-page results are in the [inline math experiment](experiments/inline-math/README.md).
