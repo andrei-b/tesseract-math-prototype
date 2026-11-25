@@ -20,6 +20,8 @@ int main(int argc, char **argv) {
             if (!api.SetVariable("lstm_detect_subscripts", "1")) return 3;
         } else if (option == "--recover") {
             if (!api.SetVariable("lstm_recover_subscripts", "1")) return 3;
+        } else if (option == "--reread") {
+            if (!api.SetVariable("lstm_reread_subscripts", "1")) return 3;
         } else if (option == "--auto") {
             layout = tesseract::PSM_AUTO;
         } else if (option == "--block") {

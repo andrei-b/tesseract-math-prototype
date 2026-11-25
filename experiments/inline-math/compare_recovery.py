@@ -1,4 +1,4 @@
-"""Compare native ink recovery with the placement-only patch, on identical images."""
+"""Compare native recovery passes on the same single-line images."""
 import argparse
 from collections import Counter
 import json
@@ -17,14 +17,14 @@ def score(symbols, gold):
                    other_symbols=len(symbols) - len(matches))
 
 
-def compare(manifest, inspector):
+def compare(manifest, inspector, reread=False):
     before, after = Counter(), Counter()
     rows = []
     for row in json.loads(manifest.read_text()):
         image = manifest.parent / row["image"]
         gold = row["subscripts"]
-        old = read_symbols(inspector, image, enabled=True)
-        new = read_symbols(inspector, image, enabled=True, recover=True)
+        old = read_symbols(inspector, image, enabled=True, recover=reread)
+        new = read_symbols(inspector, image, enabled=True, recover=True, reread=reread)
         a, b = score(old, gold), score(new, gold)
         before.update(a)
         after.update(b)
@@ -44,5 +44,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("manifest", type=Path)
     parser.add_argument("inspector")
+    parser.add_argument("--reread", action="store_true",
+                        help="compare recovery alone with recovery plus isolated-slot rereading")
     args = parser.parse_args()
-    print(json.dumps(compare(args.manifest, args.inspector), indent=2, ensure_ascii=False))
+    print(json.dumps(compare(args.manifest, args.inspector, args.reread), indent=2, ensure_ascii=False))

@@ -46,6 +46,19 @@ def bracketed_line(path):
     image.crop((0, 0, x + 12, 150)).save(path)
 
 
+def lowered_digits(path):
+    body = ImageFont.truetype("DejaVuSerif.ttf", 40)
+    small = ImageFont.truetype("DejaVuSerif.ttf", 24)
+    image = Image.new("L", (750, 100), 255)
+    draw = ImageDraw.Draw(image)
+    x = 18
+    for base, sub in zip("PCABR", "12321"):
+        x += draw_run(draw, x, 62, base, body) + 2
+        x += draw_run(draw, x, 67, sub, small) + 30
+    draw_run(draw, x, 62, "are points.", body)
+    image.crop((0, 0, x + 230, 100)).save(path)
+
+
 def check(inspector, directory):
     path = directory / "line.png"
     left, right = merged_line(path)
@@ -59,6 +72,20 @@ def check(inspector, directory):
     assert [s.text for s in old] == ["A"]
     assert [(s.text, s.sub) for s in new] == [("A", False), ("3", True)]
     assert new[1].box[3] > new[0].box[3] and "3" in new[1].choices
+
+    lowered_digits(path)
+    old = read_symbols(inspector, path, enabled=True, recover=True)
+    new = read_symbols(inspector, path, enabled=True, recover=True, reread=True)
+    assert len(new) == len(old)
+    assert [(o.word, n.word) for o, n in zip(old, new) if o.text != n.text] == [
+        ("P;", "P1"), ("R,", "R1")
+    ]
+    for o, n in zip(old, new):
+        assert tuple(o.box) == tuple(n.box)
+        if o.text != n.text:
+            assert n.sub and n.text in n.choices and n.word.endswith(n.text)
+        elif n.word in ("are", "points."):
+            assert o == n
 
     bracketed_line(path)
     assert not read_symbols(inspector, path)
@@ -85,6 +112,7 @@ def check(inspector, directory):
         before = read_symbols(inspector, path, enabled=True)
         after = read_symbols(inspector, path, enabled=True, recover=True)
         assert before == after, kind
+        assert after == read_symbols(inspector, path, enabled=True, recover=True, reread=True), kind
 
 
 if __name__ == "__main__":

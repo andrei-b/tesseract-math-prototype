@@ -15,7 +15,7 @@ class Symbol:
     choices: dict
 
 
-def read_symbols(inspector, image, enabled=False, recover=False, layout="line"):
+def read_symbols(inspector, image, enabled=False, recover=False, layout="line", reread=False):
     cmd = [str(Path(inspector).resolve()), str(image)]
     if enabled:
         cmd.append("--subscripts")
@@ -23,6 +23,8 @@ def read_symbols(inspector, image, enabled=False, recover=False, layout="line"):
         cmd.append("--" + layout)
     if recover:
         cmd.append("--recover")
+    if reread:
+        cmd.append("--reread")
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode:
         raise RuntimeError(f"{cmd} returned {result.returncode}: {result.stderr}")

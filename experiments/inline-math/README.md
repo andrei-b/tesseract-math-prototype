@@ -88,6 +88,42 @@ python3 compare_recovery.py /tmp/essays-p63/lines.json ./inspect
 
 The generated regression includes a printed A with subscript 3 that the first pass reads as a single A. It checks both output characters, placement, coordinates and the recovered digit's alternative. It also covers a rejected equation, italic prose, a punctuation list, blank input, scattered speckles and a dotted rule.
 
+## Selective rereading of a lowered character
+
+The additional opt-in flag `lstm_reread_subscripts=1` works with horizontal left-to-right LSTM text in PSM 3, 6 and 7. It considers a two-symbol word beginning with a letter when separate ink components agree with the decoder boxes. The second component must sit below the row baseline and start well below the top of the base. Reinterpreting punctuation requires enough ink above the bottom of the base to distinguish a numeral from a hanging comma. A dictionary check protects two-letter words. Longer words are outside the candidate set.
+
+The engine reads the small component twice, from the binary page at 48 pixels high and the best available page image at 40 pixels high. Both reads must give the same confident alphanumeric character. A conflicting reread of an existing digit leaves its original reading in place. An accepted replacement uses the isolated classifier result, including its alternatives and timestep information, and preserves the original symbol boxes. The flag can run on its own or alongside the earlier recovery and placement passes.
+
+### Real-page comparison
+
+The baseline for this comparison was Tesseract 5.5.4 with both earlier passes enabled and the same fast English model. The six full pages came from three books and were selected before the geometry rules were adjusted. Forty printed subscript positions were labeled on four pages before running the full-page comparison. These labels cover selected positions. We also inspected every change on all six pages, including positions outside the labels.
+
+| Evaluation | Earlier patch | With selective rereading |
+| --- | ---: | ---: |
+| Correct character and placement, 40 labeled positions on fresh full pages | 0 | 6 |
+| Correct character, same 40 positions | 5 | 11 |
+| Correct placement, same 40 positions | 14 | 19 |
+| Correct character and placement, 82 transcribed positions on the original line benchmark | 5 | 6 |
+| False placement flags, 3,901 other symbols on the original 108 lines | 5 | 5 |
+
+The full-page inspector compared 9,332 OCR symbols at a specified 300 DPI. It changed seven commas into the printed indices in A₁, A₂, w₁ and w₂. All seven were visually correct, and six fell in the pre-labeled sample. Both pages with edits came from MacMahon’s *Combinatory Analysis*. The other four pages produced no changes. With automatic resolution selection, the plain-text CLI produced six of those seven corrections. The line benchmark had one text edit across 4,001 symbols, recovering a printed C₁ previously read as C followed by a comma. A comma in the genuine printed list “A, B, C, …” stayed intact. The small number of changed pages limits conclusions about other books, fonts and subscript letters.
+
+Run the local comparisons with the same `eng.traineddata` and prebuilt inspector. The full-page script uses `ddjvu` and `pdftoppm` and expects the three book files named in `reread-pages.json`.
+
+```sh
+./inspect path/to/page.png --auto --subscripts --recover --reread
+python3 test_recovery.py ./inspect
+python3 compare_recovery.py lines.json ./inspect --reread
+python3 evaluate_reread_pages.py ~/Downloads ./inspect
+```
+
+Use the patched executable for the same comparison from the CLI.
+
+```sh
+tesseract page.png stdout --oem 1 --psm 3 --dpi 300 -l eng \
+  -c lstm_detect_subscripts=1 -c lstm_recover_subscripts=1 -c lstm_reread_subscripts=1
+```
+
 ## Document-specific z and 2
 
 The separate Python reranker uses manually verified glyph boxes from one page of a book. It compares normalized ink masks only where Tesseract proposes both characters and chooses one of them. A close visual match and a margin over the other class are required. Widely separated OCR scores and runs of three or more letters trigger abstention. The CLI prints suggested changes with their word and bounding box. It needs NumPy and OpenCV and works with an unmodified Tesseract 5.5.4 probe.

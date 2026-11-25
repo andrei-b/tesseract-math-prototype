@@ -1,0 +1,88 @@
+[
+  {
+    "image": "mac-26.png",
+    "source": "An_introduction_to_Combinatory_analysis_(Percy_MacMahon,_1920,_IA_Introductiontoco00macmrich).djvu",
+    "file_page": 26,
+    "size": [1500, 2471],
+    "subscripts": [
+      [291, 1527, "1"],
+      [363, 1527, "2"],
+      [431, 1527, "3"],
+      [503, 1527, "4"],
+      [755, 1579, "1"],
+      [827, 1579, "2"],
+      [896, 1579, "3"],
+      [964, 1579, "4"],
+      [478, 2139, "1"],
+      [549, 2139, "2"],
+      [621, 2139, "3"],
+      [692, 2139, "4"]
+    ]
+  },
+  {
+    "image": "mac-33.png",
+    "source": "An_introduction_to_Combinatory_analysis_(Percy_MacMahon,_1920,_IA_Introductiontoco00macmrich).djvu",
+    "file_page": 33,
+    "size": [1455, 2469],
+    "subscripts": [
+      [305, 982, "1"],
+      [387, 982, "2"],
+      [629, 982, "1"],
+      [708, 982, "2"],
+      [950, 982, "1"],
+      [1029, 982, "2"],
+      [222, 1594, "1"],
+      [299, 1594, "2"],
+      [376, 1594, "3"],
+      [585, 1594, "1"],
+      [662, 1594, "2"],
+      [738, 1594, "3"],
+      [947, 1594, "1"],
+      [1029, 1594, "2"],
+      [1112, 1594, "3"]
+    ]
+  },
+  {
+    "image": "mac-41.png",
+    "source": "An_introduction_to_Combinatory_analysis_(Percy_MacMahon,_1920,_IA_Introductiontoco00macmrich).djvu",
+    "file_page": 41,
+    "size": [1455, 2469],
+    "subscripts": [
+      [664, 1248, "1"],
+      [1095, 1248, "2"],
+      [566, 1339, "1"],
+      [645, 1339, "2"],
+      [552, 1591, "1"],
+      [678, 1591, "2"],
+      [587, 1638, "1"],
+      [728, 1638, "2"],
+      [1104, 1638, "1"]
+    ]
+  },
+  {
+    "image": "groups-51.png",
+    "source": "Carter N.C. Visual group theory (MAA, 2009)(ISBN 9780881857571)(O)(312s)_MSch_.pdf",
+    "file_page": 51,
+    "size": [1870, 2420],
+    "subscripts": []
+  },
+  {
+    "image": "groups-82.png",
+    "source": "Carter N.C. Visual group theory (MAA, 2009)(ISBN 9780881857571)(O)(312s)_MSch_.pdf",
+    "file_page": 82,
+    "size": [1870, 2420],
+    "subscripts": []
+  },
+  {
+    "image": "essays-32.png",
+    "source": "Essays_on_the_Theory_of_Numbers.djvu",
+    "file_page": 32,
+    "size": [1324, 1992],
+    "subscripts": [
+      [418, 195, "2"],
+      [299, 252, "2"],
+      [596, 719, "2"],
+      [682, 719, "2"]
+    ]
+  }
+]
