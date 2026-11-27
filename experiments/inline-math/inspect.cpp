@@ -10,9 +10,16 @@
 
 int main(int argc, char **argv) {
     if (argc < 2) return 1;
+    const char *language = "eng";
+    int choice_mode = 2;
+    for (int i = 2; i < argc; ++i) {
+        const std::string option(argv[i]);
+        if (option.rfind("--lang=", 0) == 0) language = argv[i] + 7;
+        if (option == "--best-only") choice_mode = 0;
+    }
     tesseract::TessBaseAPI api;
-    if (api.Init(std::getenv("TESSDATA_PREFIX"), "eng", tesseract::OEM_LSTM_ONLY)) return 2;
-    if (!api.SetVariable("lstm_choice_mode", "2")) return 3;
+    if (api.Init(std::getenv("TESSDATA_PREFIX"), language, tesseract::OEM_LSTM_ONLY)) return 2;
+    if (!api.SetVariable("lstm_choice_mode", choice_mode ? "2" : "0")) return 3;
     auto layout = tesseract::PSM_SINGLE_LINE;
     for (int i = 2; i < argc; ++i) {
         const std::string option(argv[i]);
@@ -22,6 +29,8 @@ int main(int argc, char **argv) {
             if (!api.SetVariable("lstm_recover_subscripts", "1")) return 3;
         } else if (option == "--reread") {
             if (!api.SetVariable("lstm_reread_subscripts", "1")) return 3;
+        } else if (option == "--best-only" || option.rfind("--lang=", 0) == 0) {
+            continue;
         } else if (option == "--auto") {
             layout = tesseract::PSM_AUTO;
         } else if (option == "--block") {
@@ -49,6 +58,7 @@ int main(int argc, char **argv) {
         std::cout << std::quoted(symbol.get()) << ' ' << l << ' ' << t << ' '
                   << r << ' ' << b << ' ' << it->SymbolIsSubscript() << ' '
                   << it->SymbolIsSuperscript() << ' ' << std::quoted(word ? word.get() : "");
+        if (!choice_mode) { std::cout << '\n'; continue; }
         tesseract::ChoiceIterator choice(*it);
         do {
             if (const char *text = choice.GetUTF8Text())

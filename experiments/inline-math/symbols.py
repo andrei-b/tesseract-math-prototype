@@ -15,8 +15,13 @@ class Symbol:
     choices: dict
 
 
-def read_symbols(inspector, image, enabled=False, recover=False, layout="line", reread=False):
+def read_symbols(inspector, image, enabled=False, recover=False, layout="line", reread=False,
+                 language=None, best_only=False):
     cmd = [str(Path(inspector).resolve()), str(image)]
+    if language:
+        cmd.append("--lang=" + language)
+    if best_only:
+        cmd.append("--best-only")
     if enabled:
         cmd.append("--subscripts")
     if layout != "line":

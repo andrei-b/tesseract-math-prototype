@@ -124,6 +124,30 @@ tesseract page.png stdout --oem 1 --psm 3 --dpi 300 -l eng \
   -c lstm_detect_subscripts=1 -c lstm_recover_subscripts=1 -c lstm_reread_subscripts=1
 ```
 
+## Pixel rounding and cross-book evaluation
+
+We traced 17 printed indices read as commas on the earlier MacMahon pages. Every index had a separate ink component. The published patch stopped five at the neighborhood check, three at the word bounds, two at the word length and seven at punctuation geometry. For those last seven, the ink overlap fell less than one pixel short of one third of the base character height. The revision rounds that minimum down to a whole pixel. The remaining checks, including agreement between two recognition passes, still apply.
+
+| Exact subscript identity and placement | Stock 5.5.4 | Published patch | Revised |
+| --- | ---: | ---: | ---: |
+| Earlier six full pages, 40 labeled positions | 0 | 6 | 9 |
+| Earlier 108 line crops, 82 transcribed positions | 0 | 6 | 6 |
+| Eight pages from three additional books, 71 labeled positions | 0 | 1 | 1 |
+
+The three additional recoveries were two occurrences of A₁ and one of A₃ on MacMahon file page 33. Across the original 108 lines, the revision produced the same output as the published patch, including five false placement flags among 3,901 other symbols.
+
+The independent evaluation used an English typeset PDF (*Fundamentals of Music Processing*), a Russian DjVu scan (Artin's *Galois Theory*), and an English DjVu scan (Perelman's *Physics for Entertainment*). We fixed the file pages and 71 glyph labels before running the revision. Four pages served as ordinary-text controls. On the eight pages the engines produced 10,250 symbols each. They all recognized the character at four labeled positions. The patched engines marked five correct positions and got both character and position right once. Compared with stock, both corrected one comma to the printed digit 1 and changed another comma to Cyrillic п where the book prints Latin n. All three produced identical text and zero subscript flags across the 2,918 symbols on the ordinary-text controls.
+
+We ran the eight-page benchmark twice with one CPU thread. In each benchmark we rendered each page once, rotated engine order across three trials and summed the per-page median CPU times. Stock took 10.11 and 10.10 seconds, the published patch took 8.77 and 8.78, and the revision took 8.68 and 8.89. The difference between the patched builds changed sign. The packaged stock library and the two local builds used different compiler settings.
+
+The manifest contains glyph centers and reference characters. Supply local copies of the matching books and build the current `inspect.cpp` against each library, including published revision `b2d9cbb`. The score requires the same glyph to have both the printed character and a subscript flag.
+
+```sh
+python3 benchmark_subscripts.py ~/Downloads ./stock-inspect ./published-inspect ./revised-inspect
+```
+
+Consumers of hOCR can enable `hocr_char_boxes=1` and request the hOCR renderer alongside the three subscript settings. Flagged characters carry a `<sub>` element inside their individual `ocrx_cinfo` span, whose `x_bboxes` gives the source rectangle.
+
 ## Document-specific z and 2
 
 The separate Python reranker uses manually verified glyph boxes from one page of a book. It compares normalized ink masks only where Tesseract proposes both characters and chooses one of them. A close visual match and a margin over the other class are required. Widely separated OCR scores and runs of three or more letters trigger abstention. The CLI prints suggested changes with their word and bounding box. It needs NumPy and OpenCV and works with an unmodified Tesseract 5.5.4 probe.

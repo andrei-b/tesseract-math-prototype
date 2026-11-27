@@ -1,3 +1,33 @@
+diff --git a/src/api/hocrrenderer.cpp b/src/api/hocrrenderer.cpp
+index 5f319ec..3644373 100644
+--- a/src/api/hocrrenderer.cpp
++++ b/src/api/hocrrenderer.cpp
+@@ -141,8 +141,10 @@ char *TessBaseAPI::GetHOCRText(ETEXT_DESC *monitor, int page_number) {
+   const char *paragraph_lang = nullptr;
+   bool font_info = false;
+   bool hocr_boxes = false;
++  bool detect_subscripts = false;
+   GetBoolVariable("hocr_font_info", &font_info);
+   GetBoolVariable("hocr_char_boxes", &hocr_boxes);
++  GetBoolVariable("lstm_detect_subscripts", &detect_subscripts);
+ 
+   if (input_file_.empty()) {
+     SetInputName(nullptr);
+@@ -321,7 +323,14 @@ char *TessBaseAPI::GetHOCRText(ETEXT_DESC *monitor, int page_number) {
+                    << left << " " << top << " " << right << " " << bottom
+                    << "; x_conf " << res_it->Confidence(RIL_SYMBOL) << "'>";
+         }
++        const bool lowered = hocr_boxes && detect_subscripts && res_it->SymbolIsSubscript();
++        if (lowered) {
++          hocr_str << "<sub>";
++        }
+         hocr_str << HOcrEscape(grapheme.get()).c_str();
++        if (lowered) {
++          hocr_str << "</sub>";
++        }
+         if (hocr_boxes) {
+           hocr_str << "</span>";
+           tesseract::ChoiceIterator ci(*res_it);
 diff --git a/src/ccmain/control.cpp b/src/ccmain/control.cpp
 index bd50ead..d1f7fdd 100644
 --- a/src/ccmain/control.cpp
@@ -17,7 +47,7 @@ index bd50ead..d1f7fdd 100644
    }
  
 diff --git a/src/ccmain/linerec.cpp b/src/ccmain/linerec.cpp
-index 8153413..06f6c85 100644
+index 8153413..375248a 100644
 --- a/src/ccmain/linerec.cpp
 +++ b/src/ccmain/linerec.cpp
 @@ -20,6 +20,7 @@
@@ -28,7 +58,7 @@ index 8153413..06f6c85 100644
  #include "pageres.h"
  #include "recodebeam.h"
  #include "tprintf.h"
-@@ -224,6 +225,272 @@ ImageData *Tesseract::GetRectImage(const TBOX &box, const BLOCK &block, int padd
+@@ -224,6 +225,274 @@ ImageData *Tesseract::GetRectImage(const TBOX &box, const BLOCK &block, int padd
    return new ImageData(vertical_text, box_pix);
  }
  
@@ -148,7 +178,9 @@ index 8153413..06f6c85 100644
 +  const auto &b = pair.index;
 +  // A comma can descend as far as a numeral. Require letter-sized ink
 +  // above the local base bottom before reinterpreting punctuation.
-+  if (cs.get_ispunctuation(index) && b.top() - pair.base.bottom() < h / 3) {
++  // Ink edges are measured in whole pixels. Round the required overlap down
++  // so an index on a 28-pixel capital can qualify with nine pixels of ink.
++  if (cs.get_ispunctuation(index) && b.top() - pair.base.bottom() < pair.base.height() / 3) {
 +    return false;
 +  }
 +  return b.height() >= 0.45f * h && b.width() >= 0.22f * h &&
@@ -301,7 +333,7 @@ index 8153413..06f6c85 100644
  // Recognizes a word or group of words, converting to WERD_RES in *words.
  // Analogous to classify_word_pass1, but can handle a group of words as well.
  void Tesseract::LSTMRecognizeWord(const BLOCK &block, ROW *row, WERD_RES *word,
-@@ -254,6 +521,12 @@ void Tesseract::LSTMRecognizeWord(const BLOCK &block, ROW *row, WERD_RES *word,
+@@ -254,6 +523,12 @@ void Tesseract::LSTMRecognizeWord(const BLOCK &block, ROW *row, WERD_RES *word,
                                    kWorstDictCertainty / kCertaintyScale, word_box, words,
                                    lstm_choice_mode, lstm_choice_iterations);
    delete im_data;

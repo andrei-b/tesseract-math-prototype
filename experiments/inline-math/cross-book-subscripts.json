@@ -1,0 +1,74 @@
+[
+  {
+    "image": "music-86.png",
+    "source": "Fundamentals of Music Processing_ Audio, Analysis, Algorithms, Applications ( PDFDrive ).pdf",
+    "page": 86,
+    "lang": "eng",
+    "size": [1343, 2036],
+    "ordinary_control": false,
+    "subscripts": []
+  },
+  {
+    "image": "music-121.png",
+    "source": "Fundamentals of Music Processing_ Audio, Analysis, Algorithms, Applications ( PDFDrive ).pdf",
+    "page": 121,
+    "lang": "eng",
+    "size": [1343, 2036],
+    "ordinary_control": false,
+    "subscripts": [[290, 536, "ω"], [182, 570, "t"], [202, 570, "ω"], [464, 636, "t"], [484, 636, "ω"], [466, 704, "t"], [486, 704, "ω"], [1050, 776, "t"], [1070, 776, "ω"], [555, 922, "t"], [574, 922, "ω"], [1039, 962, "ω"]]
+  },
+  {
+    "image": "music-184.png",
+    "source": "Fundamentals of Music Processing_ Audio, Analysis, Algorithms, Applications ( PDFDrive ).pdf",
+    "page": 184,
+    "lang": "eng",
+    "size": [1343, 2036],
+    "ordinary_control": true,
+    "subscripts": []
+  },
+  {
+    "image": "artin-26.png",
+    "source": "Artin_E_-_Teoria_Galua_2008_Mtsnmo.djvu",
+    "page": 26,
+    "lang": "rus+eng",
+    "size": [1716, 2472],
+    "ordinary_control": false,
+    "subscripts": [[420, 710, "1"], [562, 712, "r"], [1130, 808, "1"], [952, 858, "1"], [221, 905, "1"], [1274, 906, "1"], [1458, 908, "r"], [851, 954, "1"], [352, 1684, "1"], [491, 1684, "2"], [688, 1686, "s"], [714, 1732, "1"], [854, 1734, "2"], [1056, 1736, "s"], [818, 1830, "1"], [959, 1831, "2"], [1158, 1834, "s"], [760, 1882, "i"], [708, 1976, "1"], [1494, 1976, "1"], [258, 2022, "1"]]
+  },
+  {
+    "image": "artin-43.png",
+    "source": "Artin_E_-_Teoria_Galua_2008_Mtsnmo.djvu",
+    "page": 43,
+    "lang": "rus+eng",
+    "size": [1716, 2472],
+    "ordinary_control": false,
+    "subscripts": [[960, 226, "1"], [602, 346, "1"], [640, 346, "1"], [730, 346, "2"], [768, 346, "2"], [954, 346, "k"], [992, 346, "k"], [1082, 346, "1"], [1120, 346, "1"], [1344, 418, "1"], [1382, 420, "1"], [276, 472, "1"], [315, 468, "1"], [726, 466, "1"], [815, 472, "1"], [869, 468, "1"], [332, 662, "2"], [396, 662, "3"], [538, 662, "k"], [918, 662, "2"], [1026, 662, "k"], [662, 760, "1"], [725, 760, "2"], [788, 760, "3"], [930, 760, "k"], [1322, 760, "1"], [1364, 760, "2"], [842, 2024, "1"], [909, 2024, "2"], [1054, 2027, "n"], [772, 2118, "1"], [814, 2118, "1"], [901, 2119, "2"], [944, 2119, "2"], [1128, 2122, "n"], [1172, 2122, "n"], [1304, 2122, "i"], [1020, 2170, "i"]]
+  },
+  {
+    "image": "artin-77.png",
+    "source": "Artin_E_-_Teoria_Galua_2008_Mtsnmo.djvu",
+    "page": 77,
+    "lang": "rus+eng",
+    "size": [1716, 2472],
+    "ordinary_control": true,
+    "subscripts": []
+  },
+  {
+    "image": "physics-39.png",
+    "source": "Physics_for_Entertainment__Book_1.djvu",
+    "page": 39,
+    "lang": "eng",
+    "size": [1792, 2556],
+    "ordinary_control": true,
+    "subscripts": []
+  },
+  {
+    "image": "physics-105.png",
+    "source": "Physics_for_Entertainment__Book_1.djvu",
+    "page": 105,
+    "lang": "eng",
+    "size": [1792, 2556],
+    "ordinary_control": true,
+    "subscripts": []
+  }
+]
